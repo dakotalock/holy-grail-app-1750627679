@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synaptic Canvas: The Algorithmic Interface Weave</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX transformation in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Framer Motion CDN -->
+    <script src="https://unpkg.com/framer-motion@11.0.8/dist/framer-motion.umd.js"></script>
+    <!-- Zustand CDN -->
+    <script src="https://unpkg.com/zustand@4.5.2/umd/index.production.min.js"></script>
+    <!-- Compromise.js CDN for NLP -->
+    <script src="https://unpkg.com/compromise@14.11.0/builds/compromise.min.js"></script>
+    <style>
+        /* Custom scrollbar for aesthetic */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1a202c; /* dark gray */
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4a5568; /* slightly lighter gray */
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a0aec0; /* light gray on hover */
+        }
+        body {
+            font-family: 'Inter', sans-serif; /* A modern, clean font */
+            background-color: #1a202c; /* Dark background */
+            color: #e2e8f0; /* Light text */
+            overflow: hidden; /* Prevent body scroll, canvas handles its own */
+        }
+        #root {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: 100vw;
+        }
+        .input-panel, .control-panel {
+            flex-shrink: 0;
+        }
+        .canvas-area {
+            flex-grow: 1;
+            overflow: hidden; /* Weave nodes will be positioned absolutely */
+            position: relative;
+        }
+        /* Specific styles for gesture canvas */
+        .gesture-canvas {
+            border: 1px dashed #4a5568;
+            cursor: crosshair;
+            touch-action: none; /* Prevent scrolling on touch devices */
+        }
+        /* Custom styles for WeaveNode - for fallback/base */
+        .weave-node {
+            position: absolute;
+            cursor: grab;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 0.875rem; /* sm */
+            line-height: 1.25rem;
+            color: #cbd5e0;
+            background-color: #2d3748; /* Darker gray base */
+            border-radius: 0.375rem; /* rounded-md */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: box-shadow 0.2s ease-in-out;
+            border: 1px solid transparent; /* Base border */
+        }
+        .weave-node:active {
+            cursor: grabbing;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Import necessary React hooks and Framer Motion
+        const { useState, useEffect, useRef, useCallback, createContext, useContext } = React;
+        const { motion } = window.FramerMotion;
+        const { create } = window.zustand;
+        const nlp = window.nlp; // Compromise.js
+
+        /**
+         * @typedef {Object} WeaveNodeParameters
+         * @property {string} id - Unique ID for the node.
+         * @property {string} archetype - Type of UI component (e.g., 'button', 'text', 'shape').
+         * @property {Object} style - CSS properties for the node.
+         * @property {Object} animation - Framer Motion animation properties.
+         * @property {string} content - Text content for the node.
+         * @property {Object} debugInfo - Original input parameters for debugging.
+         * @property {number} createdAt - Timestamp of creation for aging.
+         * @property {number} [x] - X position on canvas.
+         * @property {number} [y] - Y position on canvas.
+         */
+
+        /**
+         * Zustand Store for managing global application state.
+         * Manages the array of WeaveNodeParameters and global settings.
+         */
+        const useStore = create((set, get) => ({
+            /** @type {WeaveNodeParameters[]} */
+            weaveNodes: [],
+            /** @type {boolean} */
+            debugMode: false,
+            /** @type {boolean} */
+            autoDecay: true,
+
+            /**
+             * Adds a new WeaveNode to the canvas.
+             * @param {WeaveNodeParameters} nodeParams - Parameters for the new node.
+             */
+            addNode: (nodeParams) => set((state) => ({ weaveNodes: [...state.weaveNodes, nodeParams] })),
+
+            /**
+             * Removes a WeaveNode by its ID.
+             * @param {string} id - ID of the node to remove.
+             */
+            removeNode: (id) => set((state) => ({ weaveNodes: state.weaveNodes.filter(node => node.id !== id) })),
+
+            /**
+             * Updates the position of a WeaveNode.
+             * @param {string} id - ID of the node to update.
+             * @param {number} x - New X position.
+             * @param {number} y - New Y position.
+             */
+            updateNodePosition: (id, x, y) => set((state) => ({
+                weaveNodes: state.weaveNodes.map(node =>
+                    node.id === id ? { ...node, x, y } : node
+                )
+            })),
+
+            /**
+             * Clears all nodes from the canvas.
+             */
+            clearCanvas: () => set({ weaveNodes: [] }),
+
+            /**
+             * Toggles debug mode.
+             */
+            toggleDebugMode: () => set((state) => ({ debugMode: !state.debugMode })),
+
+            /**
+             * Toggles auto decay of nodes.
+             */
+            toggleAutoDecay: () => set((state) => ({ autoDecay: !state.autoDecay })),
+
+            /**
+             * Saves the current canvas state to localStorage.
+             */
+            saveState: () => {
+                try {
+                    localStorage.setItem('synapticCanvasState', JSON.stringify(get().weaveNodes));
+                    alert('Canvas state saved!');
+                } catch (e) {
+                    console.error("Failed to save state:", e);
+                    alert('Failed to save state!');
+                }
+            },
+
+            /**
+             * Loads the canvas state from localStorage.
+             */
+            loadState: () => {
+                try {
+                    const savedState = localStorage.getItem('synapticCanvasState');
+                    if (savedState) {
+                        set({ weaveNodes: JSON.parse(savedState) });
+                        alert('Canvas state loaded!');
+                    } else {
+                        alert('No saved state found!');
+                    }
+                } catch (e) {
+                    console.error("Failed to load state:", e);
+                    alert('Failed to load state!');
+                }
+            }
+        }));
+
+        /**
+         * @typedef {Object} InputParams
+         * @property {number} sentimentScore - -1 (negative) to 1 (positive).
+         * @property {number} lengthScore - Normalized length (0-1).
+         * @property {number} complexityScore - Normalized complexity (0-1).
+         * @property {string[]} keywords - Extracted keywords.
+         * @property {string} originalInput - The raw input text/gesture description.
+         */
+
+        /**
+         * Algorithmic Generator (The Weave Engine)
+         * Translates derived parameters into a unique UI component's design and behavior.
+         * @param {InputParams} params - Derived parameters from input.
+         * @returns {WeaveNodeParameters} Generated node parameters.
+         */
+        const generateWeaveNode = (params) => {
+            const id = `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const { sentimentScore, lengthScore, complexityScore, keywords, originalInput } = params;
+
+            // --- Component Archetype Selection ---
+            let archetype = 'text';
+            if (keywords.some(k => ['button', 'action', 'click', 'go'].includes(k))) {
+                archetype = 'button';
+            } else if (keywords.some(k => ['shape', 'form', 'visual', 'abstract'].includes(k)) || complexityScore > 0.7) {
+                archetype = 'shape';
+            }
+
+            // --- Dynamic Styling Generation ---
+            let style = {
+                width: `${100 + lengthScore * 150}px`, // 100px to 250px
+                height: `${50 + lengthScore * 100}px`,  // 50px to 150px
+                borderRadius: `${complexityScore * 50}%`, // 0% (sharp) to 50% (circle/pill)
+                borderWidth: `${1 + complexityScore * 3}px`, // 1px to 4px
+                borderColor: `hsl(${200 + sentimentScore * 120}, 70%, 60%)`, // Blue (neg) to Green/Yellow (pos)
+                backgroundColor: `hsl(${200 + sentimentScore * 120}, 50%, ${30 + complexityScore * 20}%)`,
+                boxShadow: `0 0 ${5 + complexityScore * 15}px ${sentimentScore > 0.5 ? '5px' : '0px'} rgba(255, 255, 255, ${sentimentScore * 0.3})`,
+                fontSize: `${14 + lengthScore * 8}px`, // 14px to 22px
+                color: `hsl(${200 + sentimentScore * 120}, 10%, 90%)`,
+                padding: '8px 12px',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+            };
+
+            // --- Behavioral Pattern Generation (Framer Motion) ---
+            let animation = {
+                initial: { opacity: 0, scale: 0.8 },
+                animate: { opacity: 1, scale: 1, rotate: complexityScore * 360 * 2, transition: { duration: 0.8, ease: "easeOut" } },
+                whileHover: { scale: 1.05, boxShadow: `0 0 ${10 + complexityScore * 20}px 8px rgba(255, 255, 255, ${sentimentScore * 0.5 + 0.1})`, transition: { duration: 0.2 } },
+                whileTap: { scale: 0.95 },
+                drag: true, // Enable drag for all components
+                dragConstraints: { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight }, // Constrain to viewport
+            };
+
+            // Archetype specific adjustments
+            if (archetype === 'button') {
+                style.cursor = 'pointer';
+                style.fontWeight = 'bold';
+                style.textTransform = 'uppercase';
+                animation.animate.rotate = 0; // Buttons typically don't rotate
+                animation.animate.y = [0, -5, 0]; // Subtle bounce
+                animation.animate.transition = { duration: 0.8, ease: "easeOut", repeat: Infinity, repeatType: "reverse", delay: Math.random() * 2 };
+            } else if (archetype === 'shape') {
+                style.width = `${50 + complexityScore * 200}px`;
+                style.height = style.width;
+                style.backgroundColor = `hsl(${Math.random() * 360}, ${70 + complexityScore * 20}%, ${40 + sentimentScore * 10}%)`;
+                style.borderRadius = `${complexityScore > 0.8 ? '50%' : '0%'}`; // More abstract shapes
+                style.borderWidth = '0px';
+                style.boxShadow = `0 0 ${10 + complexityScore * 20}px 5px ${style.backgroundColor}`;
+                animation.animate.rotate = complexityScore * 360 * 5; // Spin for complex shapes
+                animation.animate.transition = { duration: 5 + complexityScore * 10, ease: "linear", repeat: Infinity, delay: Math.random() * 3 };
+                animation.whileHover = { scale: 1.1, rotate: animation.animate.rotate + 90, transition: { duration: 0.3 } };
+            }
+
+            return {
+                id,
+                archetype,
+                style,
+                animation,
+                content: originalInput,
+                debugInfo: params,
+                createdAt: Date.now(),
+                x: Math.random() * (window.innerWidth - parseInt(style.width)), // Initial random position
+                y: Math.random() * (window.innerHeight - parseInt(style.height)),
+            };
+        };
+
+        /**
+         * WeaveNode (Individual UI Component)
+         * Renders an algorithmically generated UI element.
+         * @param {Object} props
+         * @param {WeaveNodeParameters} props.node - The parameters for this node.
+         */
+        const WeaveNode = React.memo(({ node }) => {
+            const { id, archetype, style, animation, content, createdAt } = node;
+            const removeNode = useStore(s => s.removeNode);
+            const updateNodePosition = useStore(s => s.updateNodePosition);
+            const autoDecay = useStore(s => s.autoDecay);
+
+            const [decayStage, setDecayStage] = useState(0); // 0 = normal, 1 = fading, 2 = gone
+
+            useEffect(() => {
+                if (!autoDecay) return;
+
+                const decayTimer = setTimeout(() => {
+                    setDecayStage(1); // Start fading
+                    const removeTimer = setTimeout(() => {
+                        removeNode(id); // Remove completely
+                    }, 5000); // Fade for 5 seconds
+                    return () => clearTimeout(removeTimer);
+                }, 60000); // Node starts decaying after 60 seconds
+
+                return () => clearTimeout(decayTimer);
+            }, [id, removeNode, autoDecay]);
+
+            // Handle drag end to update node position in store
+            const handleDragEnd = (event, info) => {
+                updateNodePosition(id, info.offset.x + node.x, info.offset.y + node.y);
+            };
+
+            const decayOpacity = decayStage === 1 ? 0.3 : 1;
+            const decayScale = decayStage === 1 ? 0.8 : 1;
+
+            const baseStyle = {
+                ...style,
+                top: node.y,
+                left: node.x,
+                opacity: decayOpacity,
+                transform: `scale(${decayScale})`,
+                transition: 'opacity 5s ease-out, transform 5s ease-out', // Smooth decay transition
+            };
+
+            const contentDisplay = archetype === 'button' ? (
+                <button className="w-full h-full flex justify-center items-center text-sm font-semibold pointer-events-none" style={{ backgroundColor: 'transparent', border: 'none', color: 'inherit' }}>
+                    {content || 'Action'}
+                </button>
+            ) : (
+                <span className="text-center overflow-hidden text-ellipsis whitespace-nowrap px-2 py-1 pointer-events-none" style={{ maxWidth: '90%' }}>
+                    {content}
+                </span>
+            );
+
+            return (
+                <motion.div
+                    className={`weave-node ${archetype === 'button' ? 'hover:shadow-lg active:shadow-xl' : ''}`}
+                    style={baseStyle}
+                    {...animation}
+                    onDragEnd={handleDragEnd}
+                    aria-label={`${archetype} generated from "${content}"`}
+                    role={archetype === 'button' ? 'button' : 'region'}
+                    tabIndex={0} // Make draggable elements focusable
+                >
+                    {contentDisplay}
+                </motion.div>
+            );
+        });
+
+        /**
+         * Input Panel for text and gesture input.
+         */
+        const InputPanel = () => {
+            const addNode = useStore(s => s.addNode);
+            const [textInput, setTextInput] = useState('');
+            const [gestureInputEnabled, setGestureInputEnabled] = useState(false);
+            const gestureCanvasRef = useRef(null);
+            const drawing = useRef(false);
+            const pathPoints = useRef([]);
+
+            /**
+             * Analyzes text input using Compromise.js and maps to parameters.
+             * @param {string} text - The input text.
+             * @returns {InputParams}
+             */
+            const analyzeText = (text) => {
+                const doc = nlp(text);
+
+                // Sentiment
+                const sentiment = doc.sentiment().score; // -1 to 1
+                const sentimentScore = (sentiment + 1) / 2; // Normalize to 0-1
+
+                // Length/Complexity
+                const charCount = text.length;
+                const wordCount = doc.words().length;
+                const sentenceCount = doc.sentences().length;
+                const uniqueWords = doc.unique().words().length;
+                const lexicalDiversity = wordCount > 0 ? uniqueWords / wordCount : 0;
+
+                const lengthScore = Math.min(1, charCount / 500); // Max length of 500 chars for 1.0 score
+                const complexityScore = Math.min(1, (lexicalDiversity + (sentenceCount / 10)) / 2); // Simple average
+
+                // Keywords/Entities
+                const keywords = doc.nouns().out('array').concat(doc.verbs().out('array')).slice(0, 5);
+
+                return {
+                    sentimentScore,
+                    lengthScore,
+                    complexityScore,
+                    keywords,
+                    originalInput: text.substring(0, 100) + (text.length > 100 ? '...' : '')
+                };
+            };
+
+            /**
+             * Analyzes gesture input (simplified) and maps to parameters.
+             * @param {Array<{x: number, y: number, time: number}>} points - Recorded gesture points.
+             * @returns {InputParams}
+             */
+            const analyzeGesture = (points) => {
+                if (points.length < 2) {
+                    return {
+                        sentimentScore: 0.5, lengthScore: 0.1, complexityScore: 0.1, keywords: ['simple', 'gesture'], originalInput: 'Simple gesture'
+                    };
+                }
+
+                let totalDistance = 0;
+                let maxSpeed = 0;
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+
+                for (let i = 1; i < points.length; i++) {
+                    const p1 = points[i - 1];
+                    const p2 = points[i];
+                    const dist = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+                    totalDistance += dist;
+
+                    const timeDiff = (p2.time - p1.time) / 1000; // seconds
+                    if (timeDiff > 0) {
+                        const speed = dist / timeDiff;
+                        if (speed > maxSpeed) maxSpeed = speed;
+                    }
+
+                    minX = Math.min(minX, p1.x); maxX = Math.max(maxX, p1.x);
+                    minY = Math.min(minY, p1.y); maxY = Math.max(maxY, p1.y);
+                }
+
+                const duration = (points[points.length - 1].time - points[0].time) / 1000;
+                const avgSpeed = duration > 0 ? totalDistance / duration : 0;
+                const boundingBoxArea = (maxX - minX) * (maxY - minY);
+
+                // Mapping gesture features to input parameters
+                const complexityScore = Math.min(1, points.length / 500 + totalDistance / 2000); // More points/distance = more complex
+                const lengthScore = Math.min(1, boundingBoxArea / (200 * 200)); // Larger area = larger component
+                const sentimentScore = Math.min(1, Math.max(0, avgSpeed / 500)); // Faster gestures might imply more positive/energetic sentiment
+
+                const gestureDesc = `Gesture: ${points.length} points, ${totalDistance.toFixed(0)}px, ${duration.toFixed(1)}s`;
+
+                return {
+                    sentimentScore,
+                    lengthScore,
+                    complexityScore,
+                    keywords: ['gesture', 'drawing', 'shape'],
+                    originalInput: gestureDesc
+                };
+            };
+
+            const handleGenerate = () => {
+                let params;
+                if (textInput.trim() !== '') {
+                    params = analyzeText(textInput);
+                } else if (pathPoints.current.length > 0) {
+                    params = analyzeGesture(pathPoints.current);
+                } else {
+                    alert('Please enter text or draw a gesture!');
+                    return;
+                }
+
+                const newNode = generateWeaveNode(params);
+                addNode(newNode);
+                setTextInput(''); // Clear text input after generation
+                clearGesture(); // Clear gesture input
+            };
+
+            // Gesture input handlers
+            const startDrawing = (e) => {
+                drawing.current = true;
+                const canvas = gestureCanvasRef.current;
+                const rect = canvas.getBoundingClientRect();
+                const x = (e.clientX || e.touches[0].clientX) - rect.left;
+                const y = (e.clientY || e.touches[0].clientY) - rect.top;
+                pathPoints.current = [{ x, y, time: Date.now() }];
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+            };
+
+            const draw = (e) => {
+                if (!drawing.current) return;
+                const canvas = gestureCanvasRef.current;
+                const rect = canvas.getBoundingClientRect();
+                const x = (e.clientX || e.touches[0].clientX) - rect.left;
+                const y = (e.clientY || e.touches[0].clientY) - rect.top;
+                pathPoints.current.push({ x, y, time: Date.now() });
+                const ctx = canvas.getContext('2d');
+                ctx.lineTo(x, y);
+                ctx.strokeStyle = '#63b3ed'; // Blue for drawing
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            };
+
+            const endDrawing = () => {
+                drawing.current = false;
+            };
+
+            const clearGesture = () => {
+                const canvas = gestureCanvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+                pathPoints.current = [];
+            };
+
+            // Setup canvas size on mount
+            useEffect(() => {
+                const canvas = gestureCanvasRef.current;
+                if (canvas) {
+                    canvas.width = canvas.offsetWidth;
+                    canvas.height = canvas.offsetHeight;
+                }
+            }, [gestureInputEnabled]);
+
+            return (
+                <div className="input-panel p-4 bg-gray-800 border-r border-gray-700 flex flex-col space-y-4 max-h-screen overflow-y-auto w-1/4 min-w-[280px]">
+                    <h2 className="text-xl font-semibold text-gray-200 mb-2">Input Module</h2>
+
+                    <div className="flex flex-col">
+                        <label htmlFor="text-seed" className="text-sm font-medium text-gray-400 mb-1">Text Seed Input</label>
+                        <textarea
+                            id="text-seed"
+                            className="w-full p-2 rounded bg-gray-700 border border-gray-600 text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            rows="5"
+                            placeholder="Type text (e.g., 'A vibrant and energetic button for new beginnings!') or paste here..."
+                            value={textInput}
+                            onChange={(e) => setTextInput(e.target.value)}
+                            aria-label="Text seed input"
+                        ></textarea>
+                        <button
+                            onClick={() => setTextInput('')}
+                            className="mt-2 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition duration-200 ease-in-out self-end"
+                            aria-label="Clear text input"
+                        >
+                            Clear Text
+                        </button>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                        <input
+                            type="checkbox"
+                            id="toggle-gesture"
+                            className="form-checkbox text-blue-500 rounded"
+                            checked={gestureInputEnabled}
+                            onChange={() => setGestureInputEnabled(!gestureInputEnabled)}
+                            aria-labelledby="toggle-gesture-label"
+                        />
+                        <label id="toggle-gesture-label" htmlFor="toggle-gesture" className="text-sm font-medium text-gray-400">
+                            Enable Gesture Input
+                        </label>
+                    </div>
+
+                    {gestureInputEnabled && (
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-400 mb-1">Gesture Input Area</label>
+                            <canvas
+                                ref={gestureCanvasRef}
+                                className="gesture-canvas w-full h-32 rounded bg-gray-700"
+                                onMouseDown={startDrawing}
+                                onMouseMove={draw}
+                                onMouseUp={endDrawing}
+                                onMouseLeave={endDrawing}
+                                onTouchStart={startDrawing}
+                                onTouchMove={draw}
+                                onTouchEnd={endDrawing}
+                                aria-label="Gesture drawing area"
+                            ></canvas>
+                            <button
+                                onClick={clearGesture}
+                                className="mt-2 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition duration-200 ease-in-out self-end"
+                                aria-label="Clear gesture input"
+                            >
+                                Clear Gesture
+                            </button>
+                        </div>
+                    )}
+
+                    <button
+                        onClick={handleGenerate}
+                        className="w-full mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition duration-200 ease-in-out text-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        aria-label="Generate new component"
+                    >
+                        Generate Weave Node
+                    </button>
+                </div>
+            );
+        };
+
+        /**
+         * Canvas Manager (The Interface Collage)
+         * Manages the display and interaction of generated UI components.
+         */
+        const CanvasManager = () => {
+            const weaveNodes = useStore(s => s.weaveNodes);
+            const debugMode = useStore(s => s.debugMode);
+
+            return (
+                <div className="canvas-area bg-gray-900 relative overflow-hidden flex-grow">
+                    {weaveNodes.map(node => (
+                        <WeaveNode key={node.id} node={node} />
+                    ))}
+                    {debugMode && (
+                        <div className="absolute top-4 right-4 bg-gray-800 p-4 rounded-lg shadow-xl border border-gray-700 max-w-sm max-h-[80%] overflow-y-auto z-50">
+                            <h3 className="text-lg font-bold text-gray-200 mb-2">Debug Info</h3>
+                            {weaveNodes.map(node => (
+                                <div key={node.id} className="mb-4 pb-4 border-b border-gray-700 last:border-b-0">
+                                    <p className="font-semibold text-blue-400">{node.archetype} ({node.id.substring(0,8)})</p>
+                                    <pre className="text-xs text-gray-400 bg-gray-900 p-2 rounded-md overflow-x-auto">
+                                        {JSON.stringify(node.debugInfo, null, 2)}
+                                    </pre>
+                                </div>
+                            ))}
+                            {weaveNodes.length === 0 && <p className="text-gray-500 text-sm">No nodes to debug.</p>}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        /**
+         * Control Panel for global actions and settings.
+         */
+        const ControlPanel = () => {
+            const { clearCanvas, saveState, loadState, toggleDebugMode, debugMode, toggleAutoDecay, autoDecay } = useStore();
+
+            return (
+                <div className="control-panel p-4 bg-gray-800 border-t border-gray-700 flex flex-wrap justify-center gap-4">
+                    <button
+                        onClick={clearCanvas}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition duration-200 ease-in-out shadow-md focus:outline-none focus:ring-2 focus:ring-red-500"
+                        aria-label="Clear all components from canvas"
+                    >
+                        Clear Canvas
+                    </button>
+                    <button
+                        onClick={saveState}
+                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition duration-200 ease-in-out shadow-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        aria-label="Save current canvas state"
+                    >
+                        Save State
+                    </button>
+                    <button
+                        onClick={loadState}
+                        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg transition duration-200 ease-in-out shadow-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        aria-label="Load saved canvas state"
+                    >
+                        Load State
+                    </button>
+
+                    <div className="flex items-center space-x-4 ml-4">
+                        <label htmlFor="debug-mode" className="flex items-center cursor-pointer">
+                            <div className="relative">
+                                <input
+                                    type="checkbox"
+                                    id="debug-mode"
+                                    className="sr-only"
+                                    checked={debugMode}
+                                    onChange={toggleDebugMode}
+                                />
+                                <div className={`block w-14 h-8 rounded-full ${debugMode ? 'bg-blue-600' : 'bg-gray-600'}`}></div>
+                                <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${debugMode ? 'translate-x-full' : ''}`}></div>
+                            </div>
+                            <span className="ml-3 text-sm font-medium text-gray-300" id="debug-mode-label">Debug Mode</span>
+                        </label>
+
+                        <label htmlFor="auto-decay" className="flex items-center cursor-pointer">
+                            <div className="relative">
+                                <input
+                                    type="checkbox"
+                                    id="auto-decay"
+                                    className="sr-only"
+                                    checked={autoDecay}
+                                    onChange={toggleAutoDecay}
+                                />
+                                <div className={`block w-14 h-8 rounded-full ${autoDecay ? 'bg-blue-600' : 'bg-gray-600'}`}></div>
+                                <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${autoDecay ? 'translate-x-full' : ''}`}></div>
+                            </div>
+                            <span className="ml-3 text-sm font-medium text-gray-300" id="auto-decay-label">Auto-Decay Nodes</span>
+                        </label>
+                    </div>
+                </div>
+            );
+        };
+
+        /**
+         * Main Application Component
+         */
+        const App = () => {
+            return (
+                <div className="flex flex-col h-screen w-screen bg-gray-900 text-gray-100">
+                    {/* Header */}
+                    <header className="flex-shrink-0 p-4 bg-gray-800 border-b border-gray-700 text-center">
+                        <h1 className="text-3xl font-extrabold text-blue-400">Synaptic Canvas</h1>
+                        <p className="text-md text-gray-400">The Algorithmic Interface Weave</p>
+                    </header>
+
+                    {/* Main Content Area */}
+                    <main className="flex flex-grow overflow-hidden">
+                        <InputPanel />
+                        <CanvasManager />
+                    </main>
+
+                    {/* Control Panel */}
+                    <footer className="flex-shrink-0">
+                        <ControlPanel />
+                    </footer>
+                </div>
+            );
+        };
+
+        // Render the App component into the root div
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+
+    <div style="position:fixed;bottom:10px;right:10px;background:rgba(0,0,0,0.7);color:white;padding:5px 10px;border-radius:5px;font-family:sans-serif;font-size:12px">
+        Created by Dakota Rain Lock, powered by Holy Grail. A Dakota Rain Lock Invention.
+    </div>
+    
+</body>
+</html>
